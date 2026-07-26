@@ -2,51 +2,102 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from utils.config_loader import load_config
 from utils.logger import setup_logger
-from utils.timezone import MarketTime, OrderTimeFormatter
+from utils.timezone import MarketTime
 from api.client import KiwoomClient
-from telegram.keyboards import (get_main_menu, get_quantity_keyboard, 
-                                get_order_type_keyboard, get_confirm_keyboard, 
-                                get_main_back)
+from telegram.keyboards import (
+    get_function_menu, get_order_confirm_buttons,
+    get_final_result_buttons, get_main_menu_button
+)
+from strategy.calculator import InfiniteBuyCalculator
+from strategy.infinite_buy import InfiniteBuyStrategy
+from models.order_plan import DailyOrderPlan, OrderType
 
 logger = setup_logger()
 
-user_states = {}
+# 보류중인 리포트 저장 (채팅ID -> plan)
+pending_plans: dict = {}
+
 
 class TelegramHandlers:
     def __init__(self):
         config = load_config()
-        kiwoom_cfg = config["kiwoom"]
+        k = config["kiwoom"]
         self.client = KiwoomClient(
-            app_key=kiwoom_cfg["app_key"],
-            app_secret=kiwoom_cfg["app_secret"],
-            base_url=kiwoom_cfg["base_url"],
-            account_no=kiwoom_cfg["account_no"],
-            mock=kiwoom_cfg.get("mock", False)
+            app_key=k["app_key"], app_secret=k["app_secret"],
+            base_url=k["base_url"], account_no=k["account_no"],
+            mock=k.get("mock", False)
         )
-        
-        from strategy.infinite_buy import InfiniteBuyStrategy
-        stg_cfg = config["strategy"]
+        s = config["strategy"]
         self.strategy = InfiniteBuyStrategy(
-            self.client, stg_cfg["stock_code"], 
-            stg_cfg["split_count"], 
-            stg_cfg["total_capital"]
+            self.client, s["stock_code"], s["split_count"], s["total_capital"]
         )
 
+    # ==================== 시작 ====================
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # 시간 정보 표시 [1]
-        time_info = OrderTimeFormatter.order_time_info()
-        
         welcome = (
-            f"키움증권 무한매수법 봇\n\n"
-            f"{time_info}\n\n"
-            f"⚠️ 지정가매도는 {MarketTime.get_limit_order_deadline_kst()[1]}에 걸어두세요\n\n"
-            f"메뉴를 선택하세요:"
+            f"키움증권 무한매수법 v4.0\n\n"
+            f"리포트 버튼을 눌러 오늘의 매매 계획을 확인하세요.\n"
+            f"({MarketTime.get_korea_time().strftime('%m/%d %H:%M')} KST)"
+        )
+        await update.message.reply_text(welcome, reply_markup=get_function_menu())
+
+    # ==================== 리포트 ====================
+
+    async def show_daily_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """[📊 리포트 보기] 버튼 - 사진과 동일한 리포트 생성"""
+        query = update.callback_query
+        if query:
+            await query.answer()
+            chat_id = update.effective_chat.id
+        else:
+            chat_id = update.effective_chat.id
+        
+        # 현재가 조회 (API 또는 임시값)
+        # 실제로는 API 호출해서 current_price 가져와야 함
+        current_price = 73.50  # TODO: 실제 API 호출
+        
+        # 리포트 생성
+        plan = self.strategy.calculator.create_today_report(
+            self.strategy.position, current_price
         )
         
-        if self.strategy.position.is_reverse_mode:
-            welcome += "\n\n🔄 현재 리버스모드 진행중!"
+        # 리포트 텍스트
+        report_text = plan.format_telegram_report()
         
-        await update.message.reply_text(welcome, reply_markup=get_main_menu())
+        # 시간 추가
+        time_str = MarketTime.get_korea_time().strftime("%H:%M")
+        report_text += f"\n\n({time_str})"
+        
+        # 보류 저장
+        pending_plans[chat_id] = plan
+        
+        # 버튼
+        if plan.mode == "사이클 종료":
+            await (query.edit_message_text if query else update.message.reply_text)(
+                report_text + "\n\n🎉 사이클 종료! 축하합니다.",
+                reply_markup=get_final_result_buttons(plan.stock_code)
+            )
+            return
+        
+        # 매수/매도 있는지 확인
+        has_buy = len(plan.loc_buys) + len(plan.crash_buys) > 0
+        has_sell = plan.quarter_sell is not None or plan.final_sell is not None
+        
+        if not has_buy and not has_sell:
+            await (query.edit_message_text if query else update.message.reply_text)(
+                report_text + "\n\n오늘은 걸 주문이 없습니다.",
+                reply_markup=get_function_menu()
+            )
+            return
+        
+        # 리포트 + 승인 버튼
+        await (query.edit_message_text if query else update.message.reply_text)(
+            report_text,
+            reply_markup=get_order_confirm_buttons(plan.stock_code)
+        )
+
+    # ==================== 버튼 핸들러 ====================
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -55,111 +106,102 @@ class TelegramHandlers:
         data = query.data
         chat_id = update.effective_chat.id
         
+        logger.info(f"콜백: {data}")
+
+        # 메인/리포트
         if data == "main_menu":
-            await self._show_main_menu(query)
+            await self.start(update, context)
             return
         
-        if data == "time_info":
-            # 시간 정보 요청
-            time_info = OrderTimeFormatter.order_time_info()
-            hours = MarketTime.get_market_hours_kst()
-            
-            text = (
-                f"{time_info}\n\n"
-                f"📅 오늘의 장 운영 시간\n"
-                f"현재: {'서머타임' if hours['is_summer_time'] else '비서머타임'}\n"
-            )
-            
-            for k, v in hours.get('schedule', {}).items():
-                text += f"{k}: {v}\n"
-            
-            text += f"\n⏰ LOC 매수/매도: 장 마감 시까지 유효"
-            text += f"\n⏰ 지정가 매도: 프리장~애프터까지 유효"
-            
-            await query.edit_message_text(text, reply_markup=get_main_menu())
-            return
-            
-        if data == "balance":
-            await self._show_balance(query)
-            return
-        
-        if data == "positions":
-            await self._show_positions(query)
-            return
-        
-        if data == "new_order":
-            # 주문 시간 안내 [1]
-            limit_deadline = MarketTime.get_limit_order_deadline_kst()
-            await query.edit_message_text(
-                f"🛒 신규 주문\n\n"
-                f"지금 한국 시간: {MarketTime.get_korea_time().strftime('%H:%M')}\n"
-                f"지정가매도 걸기 적정 시간: 저녁 {limit_deadline[1]}\n\n"
-                f"종목코드 6자리를 입력하세요 (예: 005930)",
-                reply_markup=get_main_back()
-            )
-            user_states[chat_id] = {"step": "waiting_code"}
+        if data == "daily_report":
+            await self.show_daily_report(update, context)
             return
 
-        # ... 나머지 콜백 처리는 기존과 동일
+        # 매수 승인
+        if data.startswith("confirm_buy|"):
+            await self._execute_buy(chat_id, query)
+            return
+
+        # 매도 승인
+        if data.startswith("confirm_sell|"):
+            await self._execute_sell(chat_id, query)
+            return
+
+        # 전체 취소
+        if data.startswith("cancel_all|"):
+            pending_plans.pop(chat_id, None)
+            await query.edit_message_text(
+                "❌ 전체 취소되었습니다.",
+                reply_markup=get_function_menu()
+            )
+            return
+
+    # ==================== 실행 ====================
+
+    async def _execute_buy(self, chat_id: int, query):
+        """✅ 매수 승인 처리"""
+        plan = pending_plans.get(chat_id)
+        if not plan:
+            await query.edit_message_text("오류: 리포트를 다시 불러오세요")
+            return
+        
+        # API 호출 (구현 필요)
+        executed = []
+        failed = []
+        
+        for o in plan.loc_buys + plan.crash_buys:
+            # TODO: 실제 키움 API BUY 호출
+            success = True  # mock
+            if success:
+                executed.append(o.tag)
+            else:
+                failed.append(o.tag)
+        
+        # 결과
+        result_text = plan.format_execution_result(executed, [])
+        if failed:
+            result_text += f"\n\n실패: {', '.join(failed)}"
+        
+        # T값 업데이트 등
+        self.strategy.executor.update_after_buy(plan, executed)
+        
+        await query.edit_message_text(
+            result_text,
+            reply_markup=get_final_result_buttons(plan.stock_code)
+        )
+
+    async def _execute_sell(self, chat_id: int, query):
+        """✅ 매도 승인 처리"""
+        plan = pending_plans.get(chat_id)
+        if not plan:
+            await query.edit_message_text("오류: 리포트를 다시 불러오세요")
+            return
+        
+        executed = []
+        
+        # 쿼터매도 (LOC/MOC)
+        if plan.quarter_sell:
+            # TODO: 실제 API SELL 호출
+            executed.append(plan.quarter_sell.tag)
+        
+        # 지정가매도
+        if plan.final_sell:
+            # TODO: 실제 API LIMIT SELL 호출
+            executed.append(plan.final_sell.tag)
+        
+        result_text = plan.format_execution_result([], executed)
+        
+        # T값 업데이트
+        self.strategy.executor.update_after_sell(plan, executed)
+        
+        await query.edit_message_text(
+            result_text,
+            reply_markup=get_final_result_buttons(plan.stock_code)
+        )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        chat_id = update.effective_chat.id
-        text = update.message.text.strip()
-        state = user_states.get(chat_id)
-        
-        if state and state.get("step") == "waiting_code":
-            code = ''.join(c for c in text if c.isdigit())
-            if len(code) != 6:
-                # 시간 정보와 함께 에러
-                time_note = f"\n\n현재 한국 시간: {MarketTime.get_korea_time().strftime('%H:%M')}"
-                await update.message.reply_text(
-                    f"6자리 종목코드를 입력하세요{time_note}",
-                    reply_markup=get_main_back()
-                )
-                return
-            await update.message.reply_text(
-                f"{code} 수량 선택:",
-                reply_markup=get_quantity_keyboard(code)
-            )
-            user_states.pop(chat_id, None)
-            return
-
+        """텍스트 메시지는 무시하고 메뉴 유도"""
         await update.message.reply_text(
-            "메뉴에서 선택하세요",
-            reply_markup=get_main_menu()
+            "버튼을 사용해주세요:",
+            reply_markup=get_function_menu()
         )
-
-    async def _show_main_menu(self, query):
-        time_info = f"\n🕐 현재: {MarketTime.get_korea_time().strftime('%H:%M')}"
-        await query.edit_message_text(f"메인 메뉴{time_info}", reply_markup=get_main_menu())
-
-    async def _show_balance(self, query):
-        p = self.strategy.position
-        
-        # 현재 시간 정보
-        is_summer = MarketTime.is_summer_time()
-        market_schedule = "서머타임" if is_summer else "비서머타임"
-        
-        text = (
-            f"💰 계좌 상태 ({market_schedule})\n"
-            f"조회 시간: {MarketTime.get_korea_time().strftime('%Y-%m-%d %H:%M')}\n\n"
-            f"모드: {'리버스' if p.is_reverse_mode else '일반'}\n"
-            f"T값: {p.current_t:.4f}\n"
-            f"보유: {p.shares_held}주 @ ${p.avg_price:.2f}\n"
-            f"잔금: ${p.remaining_capital:.2f}\n\n"
-            f"지정가매도 걸기는 저녁 {MarketTime.get_limit_order_deadline_kst()[1]} 권장"
-        )
-        await query.edit_message_text(text, reply_markup=get_main_menu())
-
-    async def _show_positions(self, query):
-        p = self.strategy.position
-        mode = "🔄 리버스모드" if p.is_reverse_mode else "📈 일반모드"
-        
-        time_note = f"\n(현재 한국 시간: {MarketTime.get_korea_time().strftime('%H:%M')})"
-        
-        text = (
-            f"{mode}{time_note}\n\n"
-            f"평단: ${p.avg_price:.2f}\n"
-            f"보유: {p.shares_held}주"
-        )
-        await query.edit_message_text(text, reply_markup=get_main_menu())
