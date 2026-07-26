@@ -1,27 +1,26 @@
-# === 키움증권 API 설정 ===
-# 실제 계정 정보 입력 후 config.yaml로 저장
+# === 키움증권 REST API ===
 kiwoom:
-  app_key: "YOUR_APP_KEY_HERE"
-  app_secret: "YOUR_APP_SECRET_HERE"
-  base_url: "https://api.kiwoom.com"
-  account_no: "1234567801"    # 종합계좌번호 10자리
-  mock: false                 # true: 모의투자, false: 실전
+  app_key: "YOUR_KIWOOM_APP_KEY"        # 키움증권 API Key
+  app_secret: "YOUR_KIWOOM_APP_SECRET"  # 키움증권 API Secret
+  base_url: "https://api.kiwoom.com"      # 키움증권 REST API
+  
+  account_no: "1234567890"              # 종합계좌번호 10자리
+                                          # 해외주식: 앞 8자리 + "00"
+  
+  mock: false                            # false: 실전 (키움은 모의계좌 별도 없음)
+                                          # 실전 계좌로 테스트 시 소액으로!
 
-# === 텔레그램 봇 설정 ===
-# @BotFather에서 발급받은 토큰
 telegram:
-  bot_token: "123456789:YOUR_BOT_TOKEN_HERE"
-  allowed_chat_ids:          # 빈 배열이면 전체 허용
-    - 123456789
+  bot_token: "YOUR_BOT_TOKEN"
+  allowed_chat_ids: []
 
-# === 무한매수법 설정 ===
 strategy:
-  stock_code: "TQQQ"         # TQQQ 또는 SOXL
-  split_count: 20              # 20 또는 40
-  total_capital: 20000         # 원금 (달러)
-  compound_interest: false     # 종료 후 복리 적용 여부
+  stock_code: "TQQQ"                     # TQQQ 또는 SOXL
+  split_count: 20                          # 20 또는 40
+  total_capital: 20000                    # 달러 ($)
+  compound_interest: false
 
-# === 옵션 ===
 options:
   notify_on_order: true
   auto_retry: true
+  max_retries: 3
