@@ -3,6 +3,7 @@ from models.price_history import PriceHistory
 from strategy.calculator import InfiniteBuyCalculator
 from strategy.executor import InfiniteBuyExecutor
 from strategy.reverse_mode import ReverseModeCalculator
+from strategy.settlement_tracker import SettlementTracker  # ⭐ 추가
 from utils.logger import setup_logger
 
 logger = setup_logger()
@@ -12,55 +13,31 @@ class InfiniteBuyStrategy:
         self.client = client
         self.stock_code = stock_code
         self.split_count = split_count
+        
         self.executor = InfiniteBuyExecutor(client, stock_code, split_count, total_capital)
         self.position = self.executor.position
-        self.normal_calc = InfiniteBuyCalculator(stock_code, split_count)
+        
+        self.calculator = InfiniteBuyCalculator(stock_code, split_count)
         self.reverse_calc = None
         self.price_hist = PriceHistory(stock_code)
+        
+        # ⭐ 정산 트래커 연결
+        self.settlement_tracker = SettlementTracker()
+        self.settlement_tracker.initialize_from_position(self.position)
+        
         self._check_mode_transition()
 
-    def _check_mode_transition(self):
+    def update_after_execution(self, plan, executed_buys: list, executed_sells: list):
+        """
+        체결 후 호출 (executor 대신 unified interface)
+        """
+        # 기존 상태 업데이트
+        self.executor.update_after_buy(plan, executed_buys)
+        self.executor.update_after_sell(plan, executed_sells)
+        
+        # ⭐ 정산 트래커 확인 (사이클 종료 감지)
+        self.settlement_tracker.check_cycle_state(self.position)
+        
+        # 리버스/일반 모드 전환 확인
         if not self.position.is_reverse_mode and self.position.should_enter_reverse:
-            logger.warning(f"리버스모드 진입: T={self.position.current_t}")
             self._enter_reverse_mode()
-
-    def _enter_reverse_mode(self):
-        self.position.is_reverse_mode = True
-        self.position.reverse_day_count = 0
-        self.position.reverse_first_sell_done = False
-        self.reverse_calc = ReverseModeCalculator(self.position)
-
-    def check_reverse_exit(self, today_close: float) -> bool:
-        if not self.position.is_reverse_mode:
-            return False
-        if self.position.check_reverse_exit(today_close):
-            self._exit_reverse_mode()
-            return True
-        return False
-
-    def _exit_reverse_mode(self):
-        self.position.reset_for_normal()
-        self.executor.save_state()
-        logger.info(f"일반모드 복귀: T={self.position.current_t}")
-
-    def generate_today_plan(self, current_price: float, today_close: float = 0,
-                           yesterday_sell_proceeds: float = 0):
-        if today_close > 0 and self.position.is_reverse_mode:
-            exited = self.check_reverse_exit(today_close)
-            if exited:
-                return {"mode": "reverse_to_normal"}
-
-        if self.position.is_reverse_mode:
-            if not self.reverse_calc:
-                self.reverse_calc = ReverseModeCalculator(self.position)
-            day = self.position.reverse_day_count + 1
-
-            # (생략 - 실제 plan 생성)
-            self.price_hist.add_close(
-                __import__('datetime').datetime.now().strftime("%Y%m%d"), current_price)
-            return {"mode": "reverse", "day": day}
-
-        plan = self.executor.generate_daily_plan(current_price)
-        self.price_hist.add_close(
-            __import__('datetime').datetime.now().strftime("%Y%m%d"), current_price)
-        return {"mode": "normal", "summary": plan}
