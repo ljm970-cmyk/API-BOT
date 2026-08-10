@@ -1,26 +1,15 @@
-# === 키움증권 REST API ===
+# === kiwoom: 키움증권 API (필수) ===
 kiwoom:
-  app_key: "YOUR_KIWOOM_APP_KEY"        # 키움증권 API Key
-  app_secret: "YOUR_KIWOOM_APP_SECRET"  # 키움증권 API Secret
-  base_url: "https://api.kiwoom.com"      # 키움증권 REST API
-  
-  account_no: "1234567890"              # 종합계좌번호 10자리
-                                          # 해외주식: 앞 8자리 + "00"
-  
-  mock: false                            # false: 실전 (키움은 모의계좌 별도 없음)
-                                          # 실전 계좌로 테스트 시 소액으로!
+  app_key: "YOUR_APP_KEY"
+  app_secret: "YOUR_APP_SECRET"
+  base_url: "https://api.kiwoom.com"
+  account_no: "1234567890"
+  mock: true                    # true: 모의투자 먼저!
 
+# === telegram: 봇 연동 (필수) ===
 telegram:
   bot_token: "YOUR_BOT_TOKEN"
   allowed_chat_ids: []
 
-strategy:
-  stock_code: "TQQQ"                     # TQQQ 또는 SOXL
-  split_count: 20                          # 20 또는 40
-  total_capital: 20000                    # 달러 ($)
-  compound_interest: false
-
-options:
-  notify_on_order: true
-  auto_retry: true
-  max_retries: 3
+# ⚠️ strategy는 더 이상 여기서 설정하지 않습니다.
+# 텔레그램 /start 에서 종목(TQQQ/SOXL), 분할(20/40), 시드(달러)를 선택하세요.
