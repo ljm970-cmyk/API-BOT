@@ -1,113 +1,119 @@
 import requests
+import json
 from typing import Dict, Any, Optional
+from utils.logger import setup_logger
+
+logger = setup_logger()
+
+
+class KiwoomAPIError(Exception):
+    """키움 API 에러"""
+    def __init__(self, code: str, message: str, response_data: Dict = None):
+        self.code = code
+        self.message = message
+        self.response_data = response_data or {}
+        super().__init__(f"[{code}] {message}")
+
 
 class KiwoomClient:
-    """
-    키움증권 REST API 통합 클라이언트
-    
-    국내 + 해외주식 모두 지원
-    """
-    
-    def __init__(self, app_key: str, app_secret: str, base_url: str, 
-                 account_no: str, mock: bool = False):
+    """키움증권 REST API 클라이언트"""
+
+    def __init__(
+        self,
+        app_key: str,
+        app_secret: str,
+        base_url: str,
+        account_no: str,
+        mock: bool = False
+    ):
         from .auth import KiwoomAuth
-        from .kiwoom_overseas import KiwoomOverseasAPI
-        
         self.auth = KiwoomAuth(app_key, app_secret, base_url)
         self.base_url = base_url.rstrip('/')
         self.account_no = account_no
         self.mock = mock
+
+    def _get_headers(self, tr_id: str = "") -> Dict[str, str]:
+        """공통 헤더 생성"""
+        headers = self.auth.get_auth_header()
+        headers["custtype"] = "P"  # 개인
         
-        # 해외주식 API 연동
-        self.overseas = KiwoomOverseasAPI(self.auth, account_no, mock)
+        if tr_id:
+            headers["tr_id"] = tr_id
         
-        # 국내/해외 플래그
-        self.is_overseas = False
-
-    def switch_to_overseas(self):
-        """해외주식 모드로 전환"""
-        self.is_overseas = True
-        self.overseas.is_domestic = False
-    
-    def switch_to_domestic(self):
-        """국내주식 모드로 전환"""
-        self.is_overseas = False
-
-    def get_price(self, stock_code: str, market: str = "NAS") -> Dict[str, Any]:
-        """
-        현재가 조회 (자동 분기)
+        # 모의투자구분
+        if self.mock:
+            headers["tr_cont"] = "N"  # 연속조회 여부
         
-        해외주식: TQQQ, SOXL (NAS)
-        국내주식: 6자리 종목코드
-        """
-        if self.is_overseas or stock_code.isalpha():
-            # 해외주식 (영문 종목코드: TQQQ, SOXL)
-            return self.overseas.get_price(stock_code, market)
-        else:
-            # 국내주식
-            return self._get_domestic_price(stock_code)
+        return headers
 
-    def _get_domestic_price(self, stock_code: str) -> Dict[str, Any]:
-        """국내주식 현재가 (기존 코드)"""
-        # ... 기존 국내주식 API 호출 ...
-        pass
+    def _parse_response(self, response: requests.Response) -> Dict[str, Any]:
+        """응답 파싱 및 에러 처리"""
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            raise KiwoomAPIError("E999", f"JSON 파싱 실패: {response.text[:200]}")
 
-    def order(self, stock_code: str, side: str, quantity: int,
-              price: float = 0, order_type: str = "LOC",
-              market: str = "NAS") -> Dict[str, Any]:
-        """
-        주문 실행 (자동 분기)
-        """
-        if self.is_overseas or stock_code.isalpha():
-            return self.overseas.order(
-                stock_code=stock_code,
-                side=side,
-                quantity=quantity,
-                price=price,
-                order_type=order_type,
-                market=market
-            )
-        else:
-            return self._order_domestic(stock_code, side, quantity, price, order_type)
+        # 키움 API 공통 응답 구조
+        rt_cd = data.get("rt_cd", "1")
+        msg_cd = data.get("msg_cd", "UNKNOWN")
+        msg1 = data.get("msg1", "Unknown error")
 
-    def _order_domestic(self, stock_code: str, side: str, quantity: int,
-                        price: float, order_type: str) -> Dict[str, Any]:
-        """국내주식 주문 (기존 코드)"""
-        # ... 기존 국내주식 주문 ...
-        pass
+        # 성공 (rt_cd: "0")
+        if rt_cd == "0":
+            return {
+                "success": True,
+                "code": msg_cd,
+                "message": msg1,
+                "data": data.get("output", data.get("output1", data.get("output2", {}))),
+                "raw": data
+            }
 
-    def get_balance(self) -> Dict[str, Any]:
-        """잔고 조회 (자동 분기)"""
-        if self.is_overseas:
-            return self.overseas.get_balance()
-        else:
-            # 국내 잔고
-            pass
+        # 실패
+        raise KiwoomAPIError(msg_cd, msg1, data)
 
-    # ========== 편의 메서드 ==========
-    
-    def get_tqqq_price(self) -> float:
-        """TQQQ 현재가 편의 메서드"""
-        result = self.overseas.get_price("TQQQ", "NAS")
-        return float(result.get("output", {}).get("last", 0))
-    
-    def get_soxl_price(self) -> float:
-        """SOXL 현재가 편의 메서드"""
-        result = self.overseas.get_price("SOXL", "NAS")
-        return float(result.get("output", {}).get("last", 0))
-    
-    def buy_tqqq(self, quantity: int, price: float = 0, order_type: str = "LOC"):
-        """TQQQ 매수 편의 메서드"""
-        return self.overseas.order("TQQQ", "BUY", quantity, price, order_type, "NAS")
-    
-    def sell_tqqq(self, quantity: int, price: float = 0, order_type: str = "LOC"):
-        """TQQQ 매도 편의 메서드"""
-        return self.overseas.order("TQQQ", "SELL", quantity, price, order_type, "NAS")
-    
-    def buy_soxl(self, quantity: int, price: float = 0, order_type: str = "LOC"):
-        """SOXL 매수 편의 메서드"""
-        return self.overseas.order("SOXL", "BUY", quantity, price, order_type, "NAS")
-    
-    def sell_soxl(self, quantity: int, price: float = 0, order_type: str = "LOC"):
-        """SOXL 매도 편의 메서드"""
-        return self.overseas.order("SOXL", "SELL", quantity, price, order_type, "NAS")
+    def request(
+        self,
+        method: str,
+        endpoint: str,
+        tr_id: str = "",
+        params: Optional[Dict] = None,
+        data: Optional[Dict] = None,
+        timeout: int = 10
+    ) -> Dict[str, Any]:
+        """HTTP 요청 공통 처리"""
+        url = f"{self.base_url}{endpoint}"
+        headers = self._get_headers(tr_id)
+
+        # 로깅 (민감 정보 제외)
+        log_headers = {k: v for k, v in headers.items() if k.lower() not in ['authorization', 'appsecret']}
+        logger.debug(f"[{method}] {endpoint} | tr_id={tr_id} | headers={log_headers}")
+
+        try:
+            if method.upper() == "GET":
+                response = requests.get(url, headers=headers, params=params, timeout=timeout)
+            else:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    params=params,  # Query Param (주문시 필요)
+                    json=data,      # Body
+                    timeout=timeout
+                )
+            
+            response.raise_for_status()  # HTTP 에러 체크
+            return self._parse_response(response)
+
+        except requests.exceptions.Timeout:
+            raise KiwoomAPIError("E001", f"요청 시간 초과: {endpoint}")
+        except requests.exceptions.ConnectionError:
+            raise KiwoomAPIError("E002", f"연결 실패: {endpoint}")
+        except KiwoomAPIError:
+            raise
+        except Exception as e:
+            raise KiwoomAPIError("E999", f"요청 중 예외: {str(e)}")
+
+    def get(self, endpoint: str, tr_id: str = "", params: Optional[Dict] = None) -> Dict[str, Any]:
+        return self.request("GET", endpoint, tr_id=tr_id, params=params)
+
+    def post(self, endpoint: str, tr_id: str = "", params: Optional[Dict] = None, data: Optional[Dict] = None) -> Dict[str, Any]:
+        return self.request("POST", endpoint, tr_id=tr_id, params=params, data=data)
