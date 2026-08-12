@@ -1,0 +1,36 @@
+[Unit]
+Description=Trading Zombie Bot Daemon (Kiwoom Infinite Buy)
+After=network.target
+
+[Service]
+Type=simple
+# 실행 계정 (root 보다 일반 사용자 권장)
+User=ubuntu
+Group=ubuntu
+
+# 작업 디렉토리
+WorkingDirectory=/home/ubuntu/kiwoom-infinite-buy
+
+# ⭐ 핵심: 환경변수를 [Service]에 직접 하드코딩 (Isolation Leak 방지)
+Environment="TZ=Asia/Seoul"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONUTF8=1"
+
+# ⭐ daemon_name을 하드코딩하여 봇이 자기 이름을 알게 함
+Environment="daemon_name=kiwoom-infinite-bot"
+
+# 가상환경 Python 경로
+ExecStart=/home/ubuntu/kiwoom-infinite-buy/.venv/bin/python3 -m telegram_bot
+
+# 오류 시 로그
+StandardOutput=journal
+StandardError=journal
+
+# ⭐ 무적 좀비 핵심
+Restart=always
+RestartSec=5
+StartLimitInterval=60s
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
