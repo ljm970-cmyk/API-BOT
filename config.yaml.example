@@ -1,15 +1,14 @@
-# === kiwoom: 키움증권 API (필수) ===
 kiwoom:
   app_key: "YOUR_APP_KEY"
   app_secret: "YOUR_APP_SECRET"
   base_url: "https://api.kiwoom.com"
   account_no: "1234567890"
-  mock: true                    # true: 모의투자 먼저!
+  mock: true
 
-# === telegram: 봇 연동 (필수) ===
 telegram:
   bot_token: "YOUR_BOT_TOKEN"
   allowed_chat_ids: []
+  admin_chat_ids:          # ⭐ /update 권한 (텔레그램 chat_id 숫자)
+    - 123456789            # 관리자 텔레그램 ID 넣기
 
-# ⚠️ strategy는 더 이상 여기서 설정하지 않습니다.
-# 텔레그램 /start 에서 종목(TQQQ/SOXL), 분할(20/40), 시드(달러)를 선택하세요.
+# strategy는 텔레그램 /start 에서 설정
